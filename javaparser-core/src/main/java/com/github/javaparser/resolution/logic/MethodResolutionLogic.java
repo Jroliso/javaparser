@@ -188,6 +188,14 @@ public class MethodResolutionLogic {
                             expectedVariadicParameterType.asArrayType().getComponentType();
                     boolean argumentIsAssignableToVariadicComponentType =
                             variadicComponentType.isAssignableBy(currentArgumentType);
+                    if (!argumentIsAssignableToVariadicComponentType
+                            && variadicComponentType.isReferenceType()
+                            && currentArgumentType.isReferenceType()) {
+                        argumentIsAssignableToVariadicComponentType = isAssignableMatchTypeParameters(
+                                variadicComponentType.asReferenceType(),
+                                currentArgumentType.asReferenceType(),
+                                new HashMap<>());
+                    }
                     // Check boxing/unboxing for varargs
                     if (!argumentIsAssignableToVariadicComponentType) {
                         argumentIsAssignableToVariadicComponentType = isBoxingCompatibleWithTypeSolver(
@@ -240,6 +248,12 @@ public class MethodResolutionLogic {
             boolean isAssignableWithoutSubstitution = expectedDeclaredType.isAssignableBy(actualArgumentType)
                     || (methodDeclaration.getParam(i).isVariadic()
                             && convertToVariadicParameter(expectedDeclaredType).isAssignableBy(actualArgumentType));
+            if (ResolvedCaptureType.containsCapture(expectedDeclaredType)) {
+                if (!isAssignableWithoutSubstitution) {
+                    return false;
+                }
+                continue;
+            }
             if (!isAssignableWithoutSubstitution
                     && expectedDeclaredType.isReferenceType()
                     && actualArgumentType.isReferenceType()) {
@@ -247,6 +261,15 @@ public class MethodResolutionLogic {
                         expectedDeclaredType.asReferenceType(),
                         actualArgumentType.asReferenceType(),
                         matchedParameters);
+            }
+            if (!isAssignableWithoutSubstitution && expectedDeclaredType.isArray() && actualArgumentType.isArray()) {
+                ResolvedType expectedComponent =
+                        expectedDeclaredType.asArrayType().getComponentType();
+                ResolvedType actualComponent = actualArgumentType.asArrayType().getComponentType();
+                if (expectedComponent.isReferenceType() && actualComponent.isReferenceType()) {
+                    isAssignableWithoutSubstitution = isAssignableMatchTypeParameters(
+                            expectedComponent.asReferenceType(), actualComponent.asReferenceType(), matchedParameters);
+                }
             }
             if (!isAssignableWithoutSubstitution) {
                 List<ResolvedTypeParameterDeclaration> typeParameters = methodDeclaration.getTypeParameters();
@@ -460,6 +483,9 @@ public class MethodResolutionLogic {
                     .asPrimitive();
             return expected.isAssignableBy(actual);
         }
+        if (expected instanceof ResolvedCaptureType) {
+            return expected.isAssignableBy(actual);
+        }
         if (expected.isTypeVariable()) {
             matchedParameters.put(expected.asTypeParameter().getName(), actual);
             return true;
@@ -474,6 +500,9 @@ public class MethodResolutionLogic {
 
     public static boolean isAssignableMatchTypeParameters(
             ResolvedReferenceType expected, ResolvedReferenceType actual, Map<String, ResolvedType> matchedParameters) {
+        if (ResolvedCaptureType.containsCapture(expected)) {
+            return expected.isAssignableBy(actual);
+        }
         if (actual.getQualifiedName().equals(expected.getQualifiedName())) {
             return isAssignableMatchTypeParametersMatchingQName(expected, actual, matchedParameters);
         } else {
@@ -537,6 +566,9 @@ public class MethodResolutionLogic {
                     // trying to compare with unbounded wildcard type parameter <?>
                     if (actualParam.isWildcard() && !actualParam.asWildcard().isBounded()) {
                         return true;
+                    }
+                    if (actualParam.isWildcard() && actualParam.asWildcard().isExtends()) {
+                        actualParam = actualParam.asWildcard().getBoundedType();
                     }
                     if (actualParam.isTypeVariable()) {
                         return matchTypeVariable(
@@ -1229,9 +1261,8 @@ public class MethodResolutionLogic {
 
     public static void inferTypes(
             ResolvedType source, ResolvedType target, Map<ResolvedTypeParameterDeclaration, ResolvedType> mappings) {
-        if (source.equals(target)) {
-            return;
-        }
+        // Recurse through equal-looking parameterized types as well: type variables
+        // with the same simple name may belong to different methods or types.
         if (source.isReferenceType() && target.isReferenceType()) {
             ResolvedReferenceType sourceRefType = source.asReferenceType();
             ResolvedReferenceType targetRefType = target.asReferenceType();
@@ -1310,8 +1341,20 @@ public class MethodResolutionLogic {
             inferTypes(source.asConstraintType().getBound(), target, mappings);
             return;
         }
+        if (source.isTypeVariable()
+                && target.isWildcard()
+                && target.asWildcard().isExtends()) {
+            // A caller's U remains the actual type inside nested extends bounds, e.g.
+            // Supplier<Mono<U>> matched against Supplier<? extends Mono<? extends T>>.
+            inferTypes(source, target.asWildcard().getBoundedType(), mappings);
+            return;
+        }
         if (source.isTypeVariable() && target.isTypeVariable()) {
-            mappings.put(target.asTypeParameter(), source);
+            if (!source.asTypeParameter()
+                    .getQualifiedName()
+                    .equals(target.asTypeParameter().getQualifiedName())) {
+                mappings.put(target.asTypeParameter(), source);
+            }
             return;
         }
         if (source.isTypeVariable()) {

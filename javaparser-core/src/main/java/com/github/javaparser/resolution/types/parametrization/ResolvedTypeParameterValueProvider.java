@@ -21,6 +21,7 @@
 package com.github.javaparser.resolution.types.parametrization;
 
 import com.github.javaparser.resolution.declarations.ResolvedTypeParameterDeclaration;
+import com.github.javaparser.resolution.types.ResolvedArrayType;
 import com.github.javaparser.resolution.types.ResolvedType;
 import com.github.javaparser.resolution.types.ResolvedWildcard;
 import java.util.Optional;
@@ -51,8 +52,17 @@ public interface ResolvedTypeParameterValueProvider {
                     // super T"
                     if (resolvedTypeParam.isWildcard()
                             && (!resolvedTypeParam.asWildcard().equals(ResolvedWildcard.UNBOUNDED)
-                                    && type.equals(
-                                            resolvedTypeParam.asWildcard().getBoundedType()))) {
+                                    && resolvedTypeParam
+                                            .asWildcard()
+                                            .getBoundedType()
+                                            .isTypeVariable()
+                                    && typeParameter
+                                            .getQualifiedName()
+                                            .equals(resolvedTypeParam
+                                                    .asWildcard()
+                                                    .getBoundedType()
+                                                    .asTypeParameter()
+                                                    .getQualifiedName()))) {
                         return type;
                     }
                     type = resolvedTypeParam;
@@ -66,6 +76,10 @@ public interface ResolvedTypeParameterValueProvider {
             }
             return ResolvedWildcard.superBound(
                     useThisTypeParametersOnTheGivenType(type.asWildcard().getBoundedType()));
+        }
+        if (type.isArray()) {
+            return new ResolvedArrayType(
+                    useThisTypeParametersOnTheGivenType(type.asArrayType().getComponentType()));
         }
         if (type.isReferenceType()) {
             type = type.asReferenceType().transformTypeParameters(this::useThisTypeParametersOnTheGivenType);
